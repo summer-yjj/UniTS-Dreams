@@ -4,6 +4,8 @@ from data_provider.uea import collate_fn
 import torch
 from torch.utils.data import DataLoader, Subset
 from torch.utils.data.distributed import DistributedSampler
+import torch.distributed as dist
+
 
 data_dict = {
     'ETTh1': Dataset_ETT_hour,
@@ -90,7 +92,8 @@ def data_provider(args, config, flag, ddp=False):  # args,
             batch_size=batch_size,
             shuffle=False if ddp else shuffle_flag,
             num_workers=args.num_workers,
-            sampler=DistributedSampler(data_set) if ddp else None,
+            sampler=DistributedSampler(data_set) if (ddp and dist.is_initialized()) else None,
+            #sampler=DistributedSampler(data_set) if ddp else None,
             drop_last=drop_last)
         return data_set, data_loader
     elif 'classification' in config['task_name']:
@@ -109,7 +112,8 @@ def data_provider(args, config, flag, ddp=False):  # args,
             shuffle=False if ddp else shuffle_flag,
             num_workers=args.num_workers,
             drop_last=drop_last,
-            sampler=DistributedSampler(data_set) if ddp else None,
+            sampler=DistributedSampler(data_set) if (ddp and dist.is_initialized()) else None,
+            #sampler=DistributedSampler(data_set) if ddp else None,
             collate_fn=lambda x: collate_fn(x, max_len=config['seq_len'])
         )
         return data_set, data_loader
@@ -136,6 +140,8 @@ def data_provider(args, config, flag, ddp=False):  # args,
             batch_size=batch_size,
             shuffle=False if ddp else shuffle_flag,
             num_workers=args.num_workers,
-            sampler=DistributedSampler(data_set) if ddp else None,
+            sampler=DistributedSampler(data_set) if (ddp and dist.is_initialized()) else None,
+
+            #sampler=DistributedSampler(data_set) if ddp else None,
             drop_last=drop_last)
         return data_set, data_loader

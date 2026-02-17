@@ -3,7 +3,11 @@ import torch
 from exp.exp_sup import Exp_All_Task as Exp_All_Task_SUP
 import random
 import numpy as np
-import wandb
+try:
+    import wandb
+except ImportError:
+    wandb = None
+#import wandb
 from utils.ddp import is_main_process, init_distributed_mode
 
 
@@ -134,14 +138,15 @@ if __name__ == '__main__':
         print(exp_name)
 
     if is_main_process():
-        wandb.init(
-            name=exp_name,
-            # set the wandb project where this run will be logged
-            project=args.project_name,
-            # track hyperparameters and run metadata
-            config=args,
-            mode=args.debug,
-        )
+        if wandb is not None:
+            wandb.init(
+                name=exp_name,
+                # set the wandb project where this run will be logged
+                project=args.project_name,
+                # track hyperparameters and run metadata
+                config=args,
+                mode=args.debug,
+            )
 
     Exp = Exp_All_Task_SUP
 

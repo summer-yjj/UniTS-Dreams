@@ -1,5 +1,6 @@
 import torch.distributed as dist
 import torch
+import os
 
 
 def is_dist_avail_and_initialized():
@@ -27,6 +28,17 @@ def is_main_process():
 
 
 def init_distributed_mode(args):
+    # ========= 单卡 / 非分布式 =========
+    if not dist.is_available() or not dist.is_initialized():
+        # 如果不是 torchrun / 没有分布式环境变量
+        if 'RANK' not in os.environ or 'WORLD_SIZE' not in os.environ:
+            args.distributed = False
+            args.rank = 0
+            args.world_size = 1
+            print("Single GPU mode (DDP disabled)")
+            return
+
+    # ========= 分布式模式 =========
 
     dist.init_process_group(
         backend="nccl",
@@ -64,6 +76,13 @@ def gather_tensors_from_all_gpus(tensor_list, device_id, to_numpy=True):
     Returns:
     list of torch.Tensor: List of all tensors gathered from all GPUs, available on each GPU.
     """
+    # 1. 检查是否为单卡环境
+    if not dist.is_available() or not dist.is_initialized():
+        # 如果是单卡，直接走一遍 to_numpy 逻辑后返回即可
+        if to_numpy:
+            return [t.cpu().numpy() if hasattr(t, 'cpu') else t for t in tensor_list]
+        return tensor_list
+
     world_size = dist.get_world_size()
     tensor_list = [tensor.to(device_id).contiguous() for tensor in tensor_list]
     gathered_tensors = [[] for _ in range(len(tensor_list))]

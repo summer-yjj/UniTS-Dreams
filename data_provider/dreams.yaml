@@ -1,0 +1,13 @@
+task_dataset:
+  CLS_DREAMS:
+    task_name: classification
+    dataset: DREAMS
+    data: UEA
+    embed: timeF
+    root_path: dataset/DREAMS
+    seq_len: 256
+    label_len: 0
+    pred_len: 0
+    enc_in: 1
+    num_class: 2
+    c_out: None

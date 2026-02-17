@@ -21,7 +21,12 @@ import time
 import warnings
 import numpy as np
 import yaml
-import wandb
+try:
+    import wandb
+except ImportError:
+    wandb = None
+
+#import wandb
 import sys
 import copy
 
@@ -163,17 +168,22 @@ class Exp_All_Task(object):
         else:
             self.task_data_config = self.ori_task_data_config
             self.task_data_config_list = self.ori_task_data_config_list
-        device_id = dist.get_rank() % torch.cuda.device_count()
+        if args.distributed:
+            device_id = dist.get_rank() % torch.cuda.device_count()
+        else:
+            device_id = 0
+
+        #device_id = dist.get_rank() % torch.cuda.device_count()
         self.device_id = device_id
         print("device id", self.device_id)
         self.model = self._build_model()
 
-    def _build_model(self, ddp=True):
+    def _build_model(self,ddp=False):
         import importlib
         module = importlib.import_module("models."+self.args.model)
         model = module.Model(
             self.args, self.task_data_config_list).to(self.device_id)
-        if ddp:
+        if self.args.distributed:
             model = nn.parallel.DistributedDataParallel(model, device_ids=[self.device_id],
                                                         find_unused_parameters=True, gradient_as_bucket_view=True, static_graph=False)
         return model
@@ -322,11 +332,13 @@ class Exp_All_Task(object):
         scaler = NativeScaler()
 
         # Set up batch size for each task
-        if self.args.memory_check:
-            self.memory_check(data_loader_cycle, criterion_list)
-            torch.cuda.empty_cache()
+        #if self.args.memory_check:
+            #self.memory_check(data_loader_cycle, criterion_list)
+            #torch.cuda.empty_cache()
         torch.cuda.synchronize()
-        dist.barrier()
+        if self.args.distributed:
+            dist.barrier()
+        #dist.barrier()
 
         for epoch in range(self.args.train_epochs+self.args.prompt_tune_epoch):
             adjust_learning_rate(model_optim, epoch,
@@ -354,8 +366,10 @@ class Exp_All_Task(object):
                                os.path.join(path, 'checkpoint.pth'))
 
         if is_main_process():
-            wandb.log({'Final_LF-mse': avg_forecast_mse,
-                       'Final_LF-mae': avg_forecast_mae, 'Final_CLS-acc': avg_cls_acc})
+            if wandb is not None:
+                wandb.log({'Final_LF-mse': avg_forecast_mse,
+                           'Final_LF-mae': avg_forecast_mae, 'Final_CLS-acc': avg_cls_acc})
+
             print("Final score: LF-mse: {}, LF-mae: {}, CLS-acc {}".format(avg_forecast_mse,
                                                                            avg_forecast_mae, avg_cls_acc), folder=self.path)
 
@@ -427,8 +441,10 @@ class Exp_All_Task(object):
                 torch.cuda.empty_cache()
 
             if is_main_process():
-                wandb.log(
-                    {'train_loss_'+self.task_data_config_list[task_id][0]: loss_display, 'norm_value': norm_value, "loss_sum": loss_sum_display/(i+1)})
+                if wandb is not None:
+                    wandb.log(
+                        {'train_loss_' + self.task_data_config_list[task_id][0]: loss_display, 'norm_value': norm_value,
+                         "loss_sum": loss_sum_display / (i + 1)})
 
             if (i + 1) % 100 == 0:
                 if norm_value == None:
@@ -441,7 +457,9 @@ class Exp_All_Task(object):
             epoch + 1, time.time() - epoch_time), folder=self.path)
         train_loss = np.average(train_loss_set)
         torch.cuda.synchronize()
-        dist.barrier()
+        if self.args.distributed:
+            dist.barrier()
+        #dist.barrier()
 
         return train_loss
 
@@ -575,8 +593,10 @@ class Exp_All_Task(object):
                 data_task_name = self.task_data_config_list[task_id][0]
                 total_dict[data_task_name] = {'mse': mse, 'mae': mae}
                 if is_main_process():
-                    wandb.log({'eval_LF-mse_'+data_task_name: mse})
-                    wandb.log({'eval_LF-mae_'+data_task_name: mae})
+                    if wandb is not None:
+                        wandb.log({'eval_LF-mse_' + data_task_name: mse})
+                        wandb.log({'eval_LF-mae_' + data_task_name: mae})
+
                 avg_long_term_forecast_mse.append(mse)
                 avg_long_term_forecast_mae.append(mae)
             elif task_name == 'classification':
@@ -584,15 +604,18 @@ class Exp_All_Task(object):
                     setting, test_data, test_loader, data_task_name, task_id)
                 total_dict[data_task_name] = {'acc': acc}
                 if is_main_process():
-                    wandb.log({'eval_CLS-acc_'+data_task_name: acc})
+                    if wandb is not None:
+                        wandb.log({'eval_CLS-acc_' + data_task_name: acc})
+
                 avg_classification_acc.append(acc)
             elif task_name == 'imputation':
                 mse, mae = self.test_imputation(
                     setting, test_data, test_loader, data_task_name, task_id)
                 total_dict[data_task_name] = {'mse': mse, 'mae': mae}
                 if is_main_process():
-                    wandb.log({'eval_Imputation-mse_'+data_task_name: mse})
-                    wandb.log({'eval_Imputation-mae_'+data_task_name: mae})
+                    if wandb is not None:
+                        wandb.log({'eval_Imputation-mse_' + data_task_name: mse})
+                        wandb.log({'eval_Imputation-mae_' + data_task_name: mae})
                 avg_imputation_mse.append(mse)
                 avg_imputation_mae.append(mae)
             elif task_name == 'anomaly_detection':
@@ -600,8 +623,10 @@ class Exp_All_Task(object):
                     setting, test_data, test_loader, data_task_name, task_id)
                 total_dict[data_task_name] = {'f_score': f_score}
                 if is_main_process():
-                    wandb.log({'eval_Anomaly-f_score_' +
-                              data_task_name: f_score})
+                    if wandb is not None:
+                        wandb.log({'eval_Anomaly-f_score_' +
+                                   data_task_name: f_score})
+
                 avg_anomaly_f_score.append(f_score)
 
         avg_long_term_forecast_mse = np.average(avg_long_term_forecast_mse)
@@ -615,10 +640,12 @@ class Exp_All_Task(object):
         avg_anomaly_f_score = np.average(avg_anomaly_f_score)
 
         if is_main_process():
-            wandb.log({'avg_eval_LF-mse': avg_long_term_forecast_mse, 'avg_eval_LF-mae': avg_long_term_forecast_mae,
-                       'avg_eval_CLS-acc': avg_classification_acc,
-                       'avg_eval_IMP-mse': avg_imputation_mse, 'avg_eval_IMP-mae': avg_imputation_mae,
-                       'avg_eval_Anomaly-f_score': avg_anomaly_f_score})
+            if wandb is not None:
+                wandb.log({'avg_eval_LF-mse': avg_long_term_forecast_mse, 'avg_eval_LF-mae': avg_long_term_forecast_mae,
+                           'avg_eval_CLS-acc': avg_classification_acc,
+                           'avg_eval_IMP-mse': avg_imputation_mse, 'avg_eval_IMP-mae': avg_imputation_mae,
+                           'avg_eval_Anomaly-f_score': avg_anomaly_f_score})
+
             print("Avg score: LF-mse: {}, LF-mae: {}, CLS-acc {}, IMP-mse: {}, IMP-mae: {}, Ano-F: {}".format(avg_long_term_forecast_mse,
                                                                                                               avg_long_term_forecast_mae, avg_classification_acc, avg_imputation_mse, avg_imputation_mae, avg_anomaly_f_score), folder=self.path)
             print(total_dict, folder=self.path)
