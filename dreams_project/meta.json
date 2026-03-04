@@ -1,0 +1,11 @@
+{
+  "fs": 256,
+  "window_T": 256,
+  "label_map": {
+    "0": "background",
+    "1": "spindle"
+  },
+  "source": "data/dreams_units/*.npz (window-level spindle classification)",
+  "created_at": "2026-02-19T15:04:44.449456Z",
+  "notes": "当前仅包含 spindle 类（1），未来可在 raw/annotations 中增加其它事件标注并重建 label。"
+}

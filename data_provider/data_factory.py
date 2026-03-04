@@ -1,6 +1,7 @@
 from data_provider.data_loader import Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom, PSMSegLoader, \
     MSLSegLoader, SMAPSegLoader, SMDSegLoader, SWATSegLoader, UEAloader, GLUONTSDataset
 from data_provider.uea import collate_fn
+from data_provider.dreams_pointseg import DreamsPointSegDataset, collate_pointseg
 import torch
 from torch.utils.data import DataLoader, Subset
 from torch.utils.data.distributed import DistributedSampler
@@ -20,6 +21,7 @@ data_dict = {
     'SMD': SMDSegLoader,
     'SWAT': SWATSegLoader,
     'UEA': UEAloader,
+    "dreams_pointseg": DreamsPointSegDataset,
     # datasets from gluonts package:
     "gluonts": GLUONTSDataset,
 }
@@ -95,6 +97,38 @@ def data_provider(args, config, flag, ddp=False):  # args,
             sampler=DistributedSampler(data_set) if (ddp and dist.is_initialized()) else None,
             #sampler=DistributedSampler(data_set) if ddp else None,
             drop_last=drop_last)
+        return data_set, data_loader
+    elif config.get('data') == 'dreams_pointseg' or 'point_segmentation' in config.get('task_name', ''):
+        drop_last = flag == 'train'
+        split_files = config.get('split_files') or config.get('split_file')
+        if isinstance(split_files, str):
+            split_files = {flag: split_files} if split_files else None
+        elif isinstance(split_files, dict):
+            split_files = split_files.get(flag)
+        data_set = Data(
+            root_path=config['root_path'],
+            flag=flag,
+            window_T=config.get('window_T', config.get('seq_len', 256)),
+            stride_T=config.get('stride_T', config.get('stride', 128)),
+            fs=config.get('fs', 256),
+            num_classes=config.get('num_classes', 2),
+            split_files=split_files,
+            split_list=config.get('split_list'),
+            file_list=config.get('file_list'),
+            debug=getattr(args, 'debug', '') == 'enabled',
+        )
+        if args.subsample_pct is not None and flag == "train":
+            data_set = random_subset(data_set, args.subsample_pct, args.fix_seed)
+        print(flag, 'dreams_pointseg', len(data_set))
+        data_loader = DataLoader(
+            data_set,
+            batch_size=batch_size,
+            shuffle=False if ddp else shuffle_flag,
+            num_workers=args.num_workers,
+            drop_last=drop_last,
+            sampler=DistributedSampler(data_set) if (ddp and dist.is_initialized()) else None,
+            collate_fn=collate_pointseg,
+        )
         return data_set, data_loader
     elif 'classification' in config['task_name']:
         drop_last = False

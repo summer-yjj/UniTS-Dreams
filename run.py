@@ -1,4 +1,5 @@
 import argparse
+import os
 import torch
 from exp.exp_sup import Exp_All_Task as Exp_All_Task_SUP
 import random
@@ -69,7 +70,7 @@ if __name__ == '__main__':
     parser.add_argument('--des', type=str, default='test',
                         help='exp description')
     parser.add_argument('--lradj', type=str,
-                        default='supervised', help='adjust learning rate')
+                        default='constant', help='adjust learning rate (constant=one lr per run, supervised=decay, cosine=cosine decay for point_seg)')
     parser.add_argument('--clip_grad', type=float, default=None, metavar='NORM',
                         help='Clip gradient norm (default: None, no clipping)')
     parser.add_argument('--dropout', type=float, default=0.1, help='dropout')
@@ -108,6 +109,12 @@ if __name__ == '__main__':
     parser.add_argument('--anomaly_ratio', type=float,
                         default=1.0, help='prior anomaly ratio (%)')
 
+    # point_segmentation
+    parser.add_argument("--seg_loss", type=str, default="ce_dice", choices=["ce", "ce_dice", "focal"])
+    parser.add_argument("--class_weight", type=str, default="auto", choices=["auto", "manual"])
+    parser.add_argument("--seg_pos_weight", type=float, default=None, help="extra scale for positive class(es) in auto class_weight (e.g. 2.0 to emphasize spindle)")
+    parser.add_argument("--load_ckpt", type=str, default=None, help="path to checkpoint for test (e.g. checkpoints/<model_id>/best.pth)")
+
     # zero-shot-forecast-new-length
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--max_offset", type=int, default=0)
@@ -115,6 +122,9 @@ if __name__ == '__main__':
                         type=str, default=None, help='unify')
 
     args = parser.parse_args()
+    # point_segmentation: 默认梯度裁剪以稳定训练，避免 loss 剧烈震荡
+    if args.task_name == "point_segmentation" and args.clip_grad is None:
+        args.clip_grad = 1.0
     init_distributed_mode(args)
     if args.fix_seed is not None:
         random.seed(args.fix_seed)
@@ -148,7 +158,11 @@ if __name__ == '__main__':
                 mode=args.debug,
             )
 
-    Exp = Exp_All_Task_SUP
+    if args.task_name == "point_segmentation":
+        from exp.exp_pointseg import Exp_PointSeg
+        Exp = Exp_PointSeg
+    else:
+        Exp = Exp_All_Task_SUP
 
     if args.is_training:
         for ii in range(args.itr):
@@ -180,5 +194,9 @@ if __name__ == '__main__':
 
         exp = Exp(args)  # set experiments
         print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-        exp.test(setting, load_pretrain=True)
+        if args.task_name == "point_segmentation":
+            load_ckpt = args.load_ckpt or os.path.join(args.checkpoints, setting, "best.pth")
+            exp.test(setting, load_ckpt=load_ckpt)
+        else:
+            exp.test(setting, load_pretrain=True)
         torch.cuda.empty_cache()

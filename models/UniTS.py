@@ -559,6 +559,25 @@ class ForecastHead(nn.Module):
         return x
 
 
+class SegHead(nn.Module):
+    """Point-wise segmentation head: token sequence [B,V,L,D] -> logits [B, num_classes, T]."""
+
+    def __init__(self, d_model, num_classes, head_dropout=0):
+        super().__init__()
+        self.proj = nn.Linear(d_model, num_classes)
+        self.dropout = nn.Dropout(head_dropout)
+
+    def forward(self, x_token, seq_len):
+        # x_token: [B, V, L, D]
+        x = self.dropout(self.proj(x_token))
+        x = x.mean(dim=1)
+        x = x.permute(0, 2, 1)
+        L = x.shape[2]
+        if L != seq_len:
+            x = F.interpolate(x, size=seq_len, mode="linear", align_corners=False)
+        return x
+
+
 class Model(nn.Module):
     """
     UniTS: Building a Unified Time Series Model
@@ -598,16 +617,25 @@ class Model(nn.Module):
                 self.cls_tokens[task_data_name] = torch.zeros(
                     1, configs_list[i][1]['enc_in'], 1, args.d_model)
                 torch.nn.init.normal_(self.cls_tokens[task_data_name], std=.02)
+            if configs_list[i][1]['task_name'] == 'point_segmentation':
+                self.cls_tokens[task_data_name] = torch.zeros(
+                    1, configs_list[i][1]['enc_in'], 1, args.d_model)
+                torch.nn.init.normal_(self.cls_tokens[task_data_name], std=.02)
             if pretrain:
                 self.cls_tokens[task_data_name] = torch.zeros(
                     1, configs_list[i][1]['enc_in'], 1, args.d_model)
                 torch.nn.init.normal_(self.cls_tokens[task_data_name], std=.02)
 
         self.cls_nums = {}
+        self.seg_heads = nn.ModuleDict({})
         for i in range(self.num_task):
             task_data_name = configs_list[i][0]
             if configs_list[i][1]['task_name'] == 'classification':
                 self.cls_nums[task_data_name] = configs_list[i][1]['num_class']
+            elif configs_list[i][1]['task_name'] == 'point_segmentation':
+                self.cls_nums[task_data_name] = configs_list[i][1].get('seq_len', configs_list[i][1].get('window_T', 256))
+                num_classes = configs_list[i][1].get('num_classes', 2)
+                self.seg_heads[task_data_name] = SegHead(args.d_model, num_classes, head_dropout=args.dropout)
             elif configs_list[i][1]['task_name'] == 'long_term_forecast':
                 remainder = configs_list[i][1]['seq_len'] % args.patch_len
                 if remainder == 0:
@@ -722,6 +750,11 @@ class Model(nn.Module):
         elif task_name == 'anomaly_detection':
             x = x + self.position_embedding(x)
             x = torch.cat((this_prompt, x), dim=2)
+        elif task_name == 'point_segmentation':
+            x = x + self.position_embedding(x)
+            if this_prompt.shape[1] != x.shape[1]:
+                this_prompt = this_prompt.repeat(1, x.shape[1], 1, 1)
+            x = torch.cat((this_prompt, x), dim=2)
 
         return x
 
@@ -831,6 +864,26 @@ class Model(nn.Module):
         x = x + (means[:, 0, :].unsqueeze(1).repeat(1, x.shape[1], 1))
 
         return x
+
+    def point_segmentation(self, x, x_mark, task_id):
+        task_data_name = self.configs_list[task_id][0]
+        dataset_name = self.configs_list[task_id][1]['dataset']
+        prefix_prompt = self.prompt_tokens[dataset_name]
+        task_prompt = self.cls_tokens[task_data_name]
+        seg_head = self.seg_heads[task_data_name]
+        seq_len = x.shape[2]
+
+        x, means, stdev, n_vars, padding = self.tokenize(x)
+        x = self.prepare_prompt(
+            x, n_vars, prefix_prompt, task_prompt, 1, task_name='point_segmentation')
+        seq_token_len = x.shape[-2] - prefix_prompt.shape[2]
+        x = self.backbone(x, prefix_prompt.shape[2], seq_token_len)
+        x_token = x[:, :, self.prompt_num:]
+        logits = seg_head(x_token, seq_len)
+        assert logits.shape[2] == seq_len, (
+            "point_segmentation output T must equal input length: got {} vs {}".format(
+                logits.shape[2], seq_len))
+        return logits
 
     def random_masking(self, x, min_mask_ratio, max_mask_ratio):
         """
@@ -979,6 +1032,9 @@ class Model(nn.Module):
         if task_name == 'classification':
             dec_out = self.classification(x_enc, x_mark_enc, task_id)
             return dec_out  # [B, N]
+        if task_name == 'point_segmentation':
+            dec_out = self.point_segmentation(x_enc, x_mark_enc, task_id)
+            return dec_out  # [B, num_classes, T]
         if 'pretrain' in task_name:
             dec_out = self.pretraining(x_enc, x_mark_enc, task_id,
                                        enable_mask=enable_mask)

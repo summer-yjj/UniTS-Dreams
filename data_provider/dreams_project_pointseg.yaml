@@ -1,0 +1,13 @@
+task_dataset:
+  DREAMS_Project_PointSeg:
+    task_name: point_segmentation
+    dataset: DREAMS
+    data: dreams_pointseg
+    root_path: data/dreams_project/processed/pointseg
+    seq_len: 256
+    window_T: 256
+    stride_T: 128
+    fs: 256
+    num_classes: 2
+    enc_in: 1
+

@@ -1,0 +1,17 @@
+task_dataset:
+  DREAMS_Pointwise_PointSeg:
+    task_name: point_segmentation
+    dataset: DREAMS
+    data: dreams_pointseg
+    root_path: data/dreams_pointwise
+    embed: fixed
+    window_T: 256
+    stride_T: 128
+    fs: 256
+    num_classes: 2
+    enc_in: 1
+    split_files:
+      train: splits/train.txt
+      val: splits/val.txt
+      test: splits/test.txt
+

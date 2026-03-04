@@ -25,6 +25,14 @@ def adjust_learning_rate(optimizer, epoch, base_lr, args):
     elif args.lradj == 'finetune_anl':
         k = 1
         lr_adjust = {epoch: base_lr / (2 ** ((epoch) // k))}
+    elif args.lradj == 'cosine':
+        import math
+        total = getattr(args, 'train_epochs', 10)
+        total = max(int(total), 1)
+        lr = base_lr * 0.5 * (1.0 + math.cos(math.pi * (epoch + 1) / total))
+        lr_adjust = {epoch: lr}
+    elif args.lradj == 'constant':
+        lr_adjust = {epoch: base_lr}
 
     if epoch in lr_adjust.keys():
         lr = lr_adjust[epoch]

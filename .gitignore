@@ -159,3 +159,10 @@ data_loader_all.py
 
 checkpoints
 logs
+dataset/
+checkpoints/
+*.npy
+*.pt
+*.pth
+__pycache__/
+.DS_Store

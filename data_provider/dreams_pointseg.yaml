@@ -1,0 +1,26 @@
+# DREAMS 逐采样点分割（point_segmentation）任务配置
+# 数据格式见 task.md：A) 单 .npy [N,2]  B) signal.npy + label.npy
+task_dataset:
+  DREAMS_pointseg:
+    task_name: point_segmentation
+    dataset: DREAMS
+    data: dreams_pointseg
+    root_path:  data/dreams_project/processed/pointseg
+    # 数据与窗口参数
+    seq_len: 256
+    window_T: 256
+    stride_T: 128
+    fs: 256
+    # 类别数
+    num_classes: 2
+    enc_in: 1
+   # ✅ 启用 splits（强烈推荐）
+    split_files:
+      train: ../splits/train.txt
+      val:   ../splits/val.txt
+      test:  ../splits/test.txt
+    # 可选：按 split 指定列表文件（每行一个目录或 .npy 路径，相对 root_path）
+    # split_files:
+    #   train: train_splits.txt
+    #   val: val_splits.txt
+    #   test: test_splits.txt
