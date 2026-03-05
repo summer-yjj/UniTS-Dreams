@@ -36,8 +36,17 @@ except ImportError:
 
 def _print(msg, path=None):
     print(msg)
-    if path and os.path.exists(os.path.dirname(path)):
-        with open(os.path.join(os.path.dirname(path), "finetune_output.log"), "a", encoding="utf-8") as f:
+    if not path:
+        return
+    if path.endswith(".log"):
+        log_file = path
+        log_dir = os.path.dirname(path)
+    else:
+        log_dir = path
+        log_file = os.path.join(log_dir, "finetune_output.log")
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+        with open(log_file, "a", encoding="utf-8") as f:
             f.write(str(msg) + "\n")
 
 
@@ -70,6 +79,30 @@ def _safe_torch_load(path, map_location="cpu"):
         if "Weights only load failed" in msg or "weights_only" in msg:
             return torch.load(path, map_location=map_location, weights_only=False)
         raise
+
+
+
+def _normalize_state_dict_keys(state_dict):
+    """Strip wrapper prefixes to maximize checkpoint key matching."""
+    out = {}
+    for k, v in state_dict.items():
+        nk = k
+        for prefix in ("module.", "student.", "model."):
+            if nk.startswith(prefix):
+                nk = nk[len(prefix):]
+        out[nk] = v
+    return out
+
+
+def _extract_pretrain_state_dict(raw_obj):
+    if isinstance(raw_obj, dict):
+        if "student" in raw_obj and isinstance(raw_obj["student"], dict):
+            return raw_obj["student"]
+        if "state_dict" in raw_obj and isinstance(raw_obj["state_dict"], dict):
+            return raw_obj["state_dict"]
+        if "model" in raw_obj and isinstance(raw_obj["model"], dict):
+            return raw_obj["model"]
+    return raw_obj
 
 def _event_metrics_agg(metrics_list):
     if not metrics_list:
@@ -130,6 +163,9 @@ class Exp_PointSeg:
     def train(self, setting):
         self.path = os.path.join(self.args.checkpoints, setting)
         os.makedirs(self.path, exist_ok=True)
+        log_file = os.path.join(self.path, "finetune_output.log")
+        with open(log_file, "w", encoding="utf-8") as f:
+            f.write("")
         config = self.task_data_config_list[0][1]
         task_id = 0
         fs = config.get("fs", 256)
@@ -149,14 +185,15 @@ class Exp_PointSeg:
             if not os.path.isfile(pretrain_weight_path):
                 _print("pretrained model not found: {}".format(pretrain_weight_path), self.path)
             else:
-                if "pretrain_checkpoint.pth" in pretrain_weight_path:
-                    state_dict = _safe_torch_load(pretrain_weight_path, map_location="cpu")["student"]
-                    ckpt = {}
-                    for k, v in state_dict.items():
-                        if "cls_prompts" not in k:
-                            ckpt[k] = v
-                else:
-                    ckpt = _safe_torch_load(pretrain_weight_path, map_location="cpu")
+                state_dict = _extract_pretrain_state_dict(_safe_torch_load(pretrain_weight_path, map_location="cpu"))
+                if not isinstance(state_dict, dict):
+                    _print("pretrained model format invalid (expected dict state_dict)", self.path)
+                    state_dict = {}
+                ckpt = {}
+                for k, v in state_dict.items():
+                    if "cls_prompts" not in k:
+                        ckpt[k] = v
+                ckpt = _normalize_state_dict_keys(ckpt)
                 model = self.model.module if hasattr(self.model, "module") else self.model
                 model_sd = model.state_dict()
                 matched = {}
@@ -508,14 +545,17 @@ class Exp_PointSeg:
             n_vis = min(batch_x_vis.size(0), 20)
             sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             from tools.plot_segmentation import run_visualization
-            run_visualization(
-                self.model, self.device_id,
-                batch_x_vis, batch_y_vis, meta_vis_list,
-                task_id, num_classes=num_classes, fs=fs,
-                min_len=min_len, merge_gap=merge_gap,
-                save_dir=vis_dir, sample_indices=None,
-                max_save=20, compute_saliency=True,
-            )
+            try:
+                run_visualization(
+                    self.model, self.device_id,
+                    batch_x_vis, batch_y_vis, meta_vis_list,
+                    task_id, num_classes=num_classes, fs=fs,
+                    min_len=min_len, merge_gap=merge_gap,
+                    save_dir=vis_dir, sample_indices=None,
+                    max_save=20, compute_saliency=True,
+                )
+            except Exception as e:
+                _print("run_visualization failed: {}".format(e), self.path)
             with open(os.path.join(results_dir, "vis_info.json"), "w", encoding="utf-8") as f:
                 json.dump({"n_vis": n_vis, "has_vis_sample_idx_range": [0, n_vis - 1]}, f, indent=2)
 
