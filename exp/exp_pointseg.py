@@ -107,6 +107,7 @@ class Exp_PointSeg:
             "class_weight": getattr(self.args, "class_weight", "auto"),
             "num_classes": self.task_data_config_list[0][1].get("num_classes", 2),
             "focal_gamma": getattr(self.args, "focal_gamma", 2.0),
+            "bg_keep_prob": getattr(self.args, "bg_keep_prob", 1.0),
         }
         if cfg["class_weight"] == "manual" and hasattr(self.args, "class_weights"):
             cfg["class_weights"] = self.args.class_weights
