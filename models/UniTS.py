@@ -871,7 +871,7 @@ class Model(nn.Module):
         prefix_prompt = self.prompt_tokens[dataset_name]
         task_prompt = self.cls_tokens[task_data_name]
         seg_head = self.seg_heads[task_data_name]
-        seq_len = x.shape[2]
+        seq_len = x.shape[1]
 
         x, means, stdev, n_vars, padding = self.tokenize(x)
         x = self.prepare_prompt(
