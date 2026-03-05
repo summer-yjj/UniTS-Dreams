@@ -113,6 +113,7 @@ if __name__ == '__main__':
     parser.add_argument("--seg_loss", type=str, default="ce_dice", choices=["ce", "ce_dice", "focal"])
     parser.add_argument("--class_weight", type=str, default="auto", choices=["auto", "manual"])
     parser.add_argument("--seg_pos_weight", type=float, default=None, help="extra scale for positive class(es) in auto class_weight (e.g. 2.0 to emphasize spindle)")
+    parser.add_argument("--focal_gamma", type=float, default=2.0, help="gamma for focal loss in point segmentation")
     parser.add_argument("--load_ckpt", type=str, default=None, help="path to checkpoint for test (e.g. checkpoints/<model_id>/best.pth)")
 
     # zero-shot-forecast-new-length
