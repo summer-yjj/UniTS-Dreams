@@ -59,6 +59,18 @@ def _point_metrics(logits, y, num_classes):
     return acc, macro_f1, spindle_f1
 
 
+
+
+def _safe_torch_load(path, map_location="cpu"):
+    """Compat loader for PyTorch>=2.6 where torch.load defaults to weights_only=True."""
+    try:
+        return torch.load(path, map_location=map_location)
+    except Exception as e:
+        msg = str(e)
+        if "Weights only load failed" in msg or "weights_only" in msg:
+            return torch.load(path, map_location=map_location, weights_only=False)
+        raise
+
 def _event_metrics_agg(metrics_list):
     if not metrics_list:
         return {}
@@ -138,15 +150,26 @@ class Exp_PointSeg:
                 _print("pretrained model not found: {}".format(pretrain_weight_path), self.path)
             else:
                 if "pretrain_checkpoint.pth" in pretrain_weight_path:
-                    state_dict = torch.load(pretrain_weight_path, map_location="cpu")["student"]
+                    state_dict = _safe_torch_load(pretrain_weight_path, map_location="cpu")["student"]
                     ckpt = {}
                     for k, v in state_dict.items():
                         if "cls_prompts" not in k:
                             ckpt[k] = v
                 else:
-                    ckpt = torch.load(pretrain_weight_path, map_location="cpu")
+                    ckpt = _safe_torch_load(pretrain_weight_path, map_location="cpu")
                 model = self.model.module if hasattr(self.model, "module") else self.model
-                msg = model.load_state_dict(ckpt, strict=False)
+                model_sd = model.state_dict()
+                matched = {}
+                skipped = []
+                for k, v in ckpt.items():
+                    if k in model_sd and tuple(model_sd[k].shape) == tuple(v.shape):
+                        matched[k] = v
+                    else:
+                        skipped.append(k)
+                msg = model.load_state_dict(matched, strict=False)
+                _print("pretrained matched keys: {} skipped keys: {}".format(len(matched), len(skipped)), self.path)
+                if skipped:
+                    _print("pretrained first skipped keys: {}".format(skipped[:10]), self.path)
                 _print("pretrained load_state_dict: {}".format(msg), self.path)
 
         results_dir = os.path.join("results", setting)
@@ -374,7 +397,7 @@ class Exp_PointSeg:
         if load_ckpt is None:
             load_ckpt = os.path.join(self.path, "best.pth")
         if os.path.isfile(load_ckpt):
-            ckpt = torch.load(load_ckpt, map_location="cuda:{}".format(self.device_id))
+            ckpt = _safe_torch_load(load_ckpt, map_location="cuda:{}".format(self.device_id))
             model = self.model.module if hasattr(self.model, "module") else self.model
             model.load_state_dict(ckpt, strict=False)
             _print("Loaded checkpoint {}".format(load_ckpt), self.path)
