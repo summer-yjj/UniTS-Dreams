@@ -146,18 +146,7 @@ class Exp_PointSeg:
                 else:
                     ckpt = torch.load(pretrain_weight_path, map_location="cpu")
                 model = self.model.module if hasattr(self.model, "module") else self.model
-                model_sd = model.state_dict()
-                matched = {}
-                skipped = []
-                for k, v in ckpt.items():
-                    if k in model_sd and tuple(model_sd[k].shape) == tuple(v.shape):
-                        matched[k] = v
-                    else:
-                        skipped.append(k)
-                msg = model.load_state_dict(matched, strict=False)
-                _print("pretrained matched keys: {} skipped keys: {}".format(len(matched), len(skipped)), self.path)
-                if skipped:
-                    _print("pretrained first skipped keys: {}".format(skipped[:10]), self.path)
+                msg = model.load_state_dict(ckpt, strict=False)
                 _print("pretrained load_state_dict: {}".format(msg), self.path)
 
         results_dir = os.path.join("results", setting)
