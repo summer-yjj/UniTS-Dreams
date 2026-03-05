@@ -129,6 +129,25 @@ class Exp_PointSeg:
             val_loader = self._get_data("test")[1]
             val_set = self._get_data("test")[0]
 
+        # Load pretrained weights (Optional)
+        if self.args.pretrained_weight is not None:
+            pretrain_weight_path = self.args.pretrained_weight
+            _print("loading pretrained model: {}".format(pretrain_weight_path), self.path)
+            if not os.path.isfile(pretrain_weight_path):
+                _print("pretrained model not found: {}".format(pretrain_weight_path), self.path)
+            else:
+                if "pretrain_checkpoint.pth" in pretrain_weight_path:
+                    state_dict = torch.load(pretrain_weight_path, map_location="cpu")["student"]
+                    ckpt = {}
+                    for k, v in state_dict.items():
+                        if "cls_prompts" not in k:
+                            ckpt[k] = v
+                else:
+                    ckpt = torch.load(pretrain_weight_path, map_location="cpu")
+                model = self.model.module if hasattr(self.model, "module") else self.model
+                msg = model.load_state_dict(ckpt, strict=False)
+                _print("pretrained load_state_dict: {}".format(msg), self.path)
+
         results_dir = os.path.join("results", setting)
         curves_dir = os.path.join(results_dir, "curves")
         os.makedirs(curves_dir, exist_ok=True)
@@ -186,7 +205,7 @@ class Exp_PointSeg:
 
         model_optim = torch.optim.Adam(self.model.parameters(), lr=self.args.learning_rate, weight_decay=getattr(self.args, "weight_decay", 0))
         scaler = NativeScaler()
-        best_val_f1 = 0.0
+        best_val_f1 = -1.0
 
         debug_enabled = getattr(self.args, "debug", "") == "enabled"
         debug_param = None
@@ -255,7 +274,12 @@ class Exp_PointSeg:
             if wandb and is_main_process():
                 wandb.log({"train_loss": train_loss_avg, "val_acc": val_acc, "val_macro_f1": val_macro_f1, "val_spindle_f1": val_spindle_f1, "val_event_f1": val_event_f1, "lr": current_lr})
 
-            if val_spindle_f1 > best_val_f1:
+            if is_main_process():
+                state = self.model.state_dict() if not hasattr(self.model, "module") else self.model.module.state_dict()
+                last_ckpt_path = os.path.join(self.path, "last.pth")
+                torch.save(state, last_ckpt_path)
+
+            if val_spindle_f1 >= best_val_f1:
                 best_val_f1 = val_spindle_f1
                 ckpt_path = os.path.join(self.path, "best.pth")
                 if is_main_process():
