@@ -117,7 +117,7 @@ def run_visualization(
     compute_saliency=True,
 ):
     """
-    batch_x [B,C,T], batch_y [B,T], meta_list list of dict.
+    batch_x [B,T,C], batch_y [B,T], meta_list list of dict.
     保存至 save_dir，最多 max_save 张图；若 compute_saliency 则对同一样本再存 saliency 图。
     """
     import torch.nn.functional as F
@@ -140,7 +140,7 @@ def run_visualization(
     for idx in sample_indices:
         x = batch_x[idx]
         y = batch_y[idx]
-        sig = x[0].cpu().numpy() if x.dim() >= 2 else x.cpu().numpy()
+        sig = x[:, 0].cpu().numpy() if x.dim() == 2 else x.cpu().numpy()
         gt = y.cpu().numpy()
         pred = pred_class[idx].cpu().numpy()
         meta = meta_list[idx] if idx < len(meta_list) else {}
@@ -173,7 +173,7 @@ def run_visualization(
                 model.zero_grad()
                 target.backward()
                 if one_x.grad is not None:
-                    sal = one_x.grad.abs().sum(dim=1).squeeze(0).detach().cpu().numpy()
+                    sal = one_x.grad.abs().sum(dim=2).squeeze(0).detach().cpu().numpy()
                     t_sal = np.arange(len(sal)) / fs
                     plot_saliency(
                         t_sal, sig,
@@ -205,7 +205,7 @@ def run_visualization(
                     model.zero_grad()
                     target.backward()
                     if one_x.grad is not None:
-                        sal = one_x.grad.abs().sum(dim=1).squeeze(0).detach().cpu().numpy()
+                        sal = one_x.grad.abs().sum(dim=2).squeeze(0).detach().cpu().numpy()
                         t_sal = np.arange(len(sal)) / fs
                         plot_saliency(
                             t_sal, sig,
