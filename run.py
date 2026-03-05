@@ -182,6 +182,12 @@ if __name__ == '__main__':
             exp = Exp(args)  # set experiments
             print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
             exp.train(setting)
+            if args.task_name == "point_segmentation":
+                load_ckpt = os.path.join(args.checkpoints, setting, "best.pth")
+                if not os.path.isfile(load_ckpt):
+                    load_ckpt = os.path.join(args.checkpoints, setting, "last.pth")
+                print('>>>>>>>auto testing (after training): {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+                exp.test(setting, load_ckpt=load_ckpt)
     else:
         ii = 0
         setting = '{}_{}_{}_{}_ft{}_dm{}_el{}_{}_{}'.format(
