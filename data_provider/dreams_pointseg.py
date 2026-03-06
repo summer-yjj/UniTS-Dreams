@@ -162,7 +162,9 @@ class DreamsPointSegDataset(Dataset):
             end = start + self.window_T
             if end > N:
                 break
-            self.windows.append((excerpt_id, start, end, fmt, base_dir, path_a))
+            y_win = lab[start:end]
+            has_pos = bool(np.any(y_win > 0))
+            self.windows.append((excerpt_id, start, end, fmt, base_dir, path_a, has_pos))
 
     def _build_from_list(self, lines):
         for line in lines:
@@ -194,7 +196,7 @@ class DreamsPointSegDataset(Dataset):
 
     def __getitem__(self, idx):
         item = self.windows[idx]
-        excerpt_id, start, end, fmt, base_dir, path_a = item
+        excerpt_id, start, end, fmt, base_dir, path_a, _has_pos = item
         sig, lab = self._load_segment(fmt, base_dir, path_a)
         x = sig[start:end].astype(np.float32)
         y = lab[start:end].astype(np.int64)
@@ -210,6 +212,15 @@ class DreamsPointSegDataset(Dataset):
             "fs": self.fs,
         }
         return x_t, y_t, meta
+
+    def get_window_sample_weights(self, pos_window_weight=3.0):
+        """Return per-window sampling weights (positive-window upweighting)."""
+        pos_w = max(float(pos_window_weight), 1.0)
+        weights = []
+        for item in self.windows:
+            has_pos = bool(item[6]) if len(item) > 6 else False
+            weights.append(pos_w if has_pos else 1.0)
+        return weights
 
 
 def collate_pointseg(batch):

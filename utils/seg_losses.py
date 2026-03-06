@@ -19,6 +19,25 @@ def _dice_per_class(logits, y, num_classes, smooth=1e-5):
     return loss / max(num_classes, 1)
 
 
+def _tversky_loss(logits, y, num_classes, alpha=0.7, beta=0.3, smooth=1e-5, include_background=False):
+    """Multi-class Tversky loss on point-wise probs. For rare-event detection, bg can be excluded."""
+    probs = F.softmax(logits, dim=1)
+    y_onehot = F.one_hot(y.clamp(0, num_classes - 1), num_classes=num_classes).permute(0, 2, 1).float()
+    class_ids = range(num_classes) if include_background else range(1, num_classes)
+    losses = []
+    for c in class_ids:
+        p = probs[:, c, :]
+        t = y_onehot[:, c, :]
+        tp = (p * t).sum()
+        fn = ((1.0 - p) * t).sum()
+        fp = (p * (1.0 - t)).sum()
+        tv = (tp + smooth) / (tp + alpha * fn + beta * fp + smooth)
+        losses.append(1.0 - tv)
+    if not losses:
+        return torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
+    return torch.stack(losses).mean()
+
+
 
 
 def _apply_bg_sampling(logits_flat, y_flat, bg_keep_prob=1.0):
@@ -87,4 +106,9 @@ def compute_seg_loss(logits, y, cfg):
     if seg_loss == "ce_dice":
         dice = _dice_per_class(logits, y, num_classes)
         return ce + dice
+    if seg_loss == "tversky":
+        alpha = float(cfg.get("tversky_alpha", 0.7))
+        beta = float(cfg.get("tversky_beta", 0.3))
+        include_bg = bool(cfg.get("tversky_include_background", False))
+        return _tversky_loss(logits, y, num_classes, alpha=alpha, beta=beta, include_background=include_bg)
     return ce
