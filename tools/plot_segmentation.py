@@ -17,6 +17,21 @@ if ROOT not in sys.path:
 from utils.event_post import pred_to_events, gt_to_events
 
 
+def _safe_saliency(model, one_x, task_id, class_idx):
+    """Compute |grad| saliency for class_idx; return [T] numpy or None on failure."""
+    try:
+        one_x = one_x.detach().clone().requires_grad_(True)
+        logits_g = model(one_x, None, None, None, task_id=task_id, task_name="point_segmentation")
+        target = logits_g[:, class_idx].sum()
+        grads = torch.autograd.grad(target, one_x, retain_graph=False, create_graph=False, allow_unused=True)[0]
+        if grads is None:
+            return None
+        return grads.detach().abs().sum(dim=2).squeeze(0).cpu().numpy()
+    except RuntimeError as e:
+        print("[plot_segmentation] saliency skipped due to autograd error:", str(e))
+        return None
+
+
 def plot_one(
     signal,
     gt_mask,
@@ -117,7 +132,7 @@ def run_visualization(
     compute_saliency=True,
 ):
     """
-    batch_x [B,C,T], batch_y [B,T], meta_list list of dict.
+    batch_x [B,T,C], batch_y [B,T], meta_list list of dict.
     保存至 save_dir，最多 max_save 张图；若 compute_saliency 则对同一样本再存 saliency 图。
     """
     import torch.nn.functional as F
@@ -140,7 +155,7 @@ def run_visualization(
     for idx in sample_indices:
         x = batch_x[idx]
         y = batch_y[idx]
-        sig = x[0].cpu().numpy() if x.dim() >= 2 else x.cpu().numpy()
+        sig = x[:, 0].cpu().numpy() if x.dim() == 2 else x.cpu().numpy()
         gt = y.cpu().numpy()
         pred = pred_class[idx].cpu().numpy()
         meta = meta_list[idx] if idx < len(meta_list) else {}
@@ -167,13 +182,9 @@ def run_visualization(
             )
             # Saliency 针对 spindle 类
             if compute_saliency:
-                one_x = batch_x[idx : idx + 1].detach().clone().requires_grad_(True)
-                logits_g = model(one_x, None, None, None, task_id=task_id, task_name="point_segmentation")
-                target = logits_g[:, 1].sum() if num_classes >= 2 else logits_g[:, 0].sum()
-                model.zero_grad()
-                target.backward()
-                if one_x.grad is not None:
-                    sal = one_x.grad.abs().sum(dim=1).squeeze(0).detach().cpu().numpy()
+                target_class = 1 if num_classes >= 2 else 0
+                sal = _safe_saliency(model, batch_x[idx : idx + 1], task_id=task_id, class_idx=target_class)
+                if sal is not None:
                     t_sal = np.arange(len(sal)) / fs
                     plot_saliency(
                         t_sal, sig,
@@ -199,13 +210,8 @@ def run_visualization(
                     gt_events=gt_ev,
                 )
                 if compute_saliency:
-                    one_x = batch_x[idx : idx + 1].detach().clone().requires_grad_(True)
-                    logits_g = model(one_x, None, None, None, task_id=task_id, task_name="point_segmentation")
-                    target = logits_g[:, c].sum()
-                    model.zero_grad()
-                    target.backward()
-                    if one_x.grad is not None:
-                        sal = one_x.grad.abs().sum(dim=1).squeeze(0).detach().cpu().numpy()
+                    sal = _safe_saliency(model, batch_x[idx : idx + 1], task_id=task_id, class_idx=c)
+                    if sal is not None:
                         t_sal = np.arange(len(sal)) / fs
                         plot_saliency(
                             t_sal, sig,

@@ -33,10 +33,20 @@ def _infer_format(root_path, path_or_dir):
     return None
 
 
+def _normalize_signal_shape(sig):
+    """Normalize signal shape to [T, C] for UniTS input convention."""
+    sig = np.asarray(sig)
+    if sig.ndim == 1:
+        return sig[:, np.newaxis]
+    if sig.ndim != 2:
+        raise ValueError("DREAMS pointseg: signal must be 1D or 2D, got shape {}".format(sig.shape))
+    return sig
+
+
 class DreamsPointSegDataset(Dataset):
     """
     逐采样点分割：__getitem__ 返回 (x, y, meta)。
-    x: [C, T] FloatTensor,  y: [T] LongTensor,  meta: dict (excerpt_id, window_start, window_end, fs 等)。
+    x: [T, C] FloatTensor,  y: [T] LongTensor,  meta: dict (excerpt_id, window_start, window_end, fs 等)。
     支持滑窗：window_T, stride_T, fs=256。
     数据格式：
       A) 单 .npy 形状 [N, 2]：第 0 列信号，第 1 列逐点 label
@@ -141,18 +151,20 @@ class DreamsPointSegDataset(Dataset):
             raise ValueError(
                 "DREAMS pointseg: unknown format. Expect A) one .npy [N,2] or B) signal.npy + label.npy. Path: {}".format(path_or_dir)
             )
-        sig = np.atleast_1d(sig).flatten()
+        sig = _normalize_signal_shape(sig)
         lab = np.atleast_1d(lab).flatten()
-        if len(sig) != len(lab):
-            raise ValueError("DREAMS pointseg: signal length {} != label length {} at {}".format(len(sig), len(lab), path_or_dir))
-        N = len(sig)
+        if sig.shape[0] != len(lab):
+            raise ValueError("DREAMS pointseg: signal length {} != label length {} at {}".format(sig.shape[0], len(lab), path_or_dir))
+        N = sig.shape[0]
         base_dir = (full if os.path.isdir(full) else path_or_dir) if fmt == "B" else None
         path_a = path if fmt == "A" else None
         for start in range(0, max(0, N - self.window_T) + 1, self.stride_T):
             end = start + self.window_T
             if end > N:
                 break
-            self.windows.append((excerpt_id, start, end, fmt, base_dir, path_a))
+            y_win = lab[start:end]
+            has_pos = bool(np.any(y_win > 0))
+            self.windows.append((excerpt_id, start, end, fmt, base_dir, path_a, has_pos))
 
     def _build_from_list(self, lines):
         for line in lines:
@@ -178,19 +190,19 @@ class DreamsPointSegDataset(Dataset):
             arr = np.load(path_a, allow_pickle=True)
             sig = np.asarray(arr[:, 0], dtype=np.float64)
             lab = np.asarray(arr[:, 1], dtype=np.int64)
-        sig = np.atleast_1d(sig).flatten()
+        sig = _normalize_signal_shape(sig)
         lab = np.atleast_1d(lab).flatten()
         return sig, lab
 
     def __getitem__(self, idx):
         item = self.windows[idx]
-        excerpt_id, start, end, fmt, base_dir, path_a = item
+        excerpt_id, start, end, fmt, base_dir, path_a, _has_pos = item
         sig, lab = self._load_segment(fmt, base_dir, path_a)
         x = sig[start:end].astype(np.float32)
         y = lab[start:end].astype(np.int64)
         x = np.clip(np.nan_to_num(x), -1e9, 1e9)
-        if x.ndim == 1:
-            x = x[np.newaxis, :]  # [1, T]
+        if x.ndim != 2:
+            raise ValueError("DREAMS pointseg: expected x window [T,C], got shape {}".format(x.shape))
         x_t = torch.from_numpy(x)
         y_t = torch.from_numpy(y)
         meta = {
@@ -201,10 +213,19 @@ class DreamsPointSegDataset(Dataset):
         }
         return x_t, y_t, meta
 
+    def get_window_sample_weights(self, pos_window_weight=3.0):
+        """Return per-window sampling weights (positive-window upweighting)."""
+        pos_w = max(float(pos_window_weight), 1.0)
+        weights = []
+        for item in self.windows:
+            has_pos = bool(item[6]) if len(item) > 6 else False
+            weights.append(pos_w if has_pos else 1.0)
+        return weights
+
 
 def collate_pointseg(batch):
-    """batch: list of (x, y, meta). 返回 batch_x [B,C,T], batch_y [B,T], meta list[dict]."""
+    """batch: list of (x, y, meta). 返回 batch_x [B,T,C], batch_y [B,T], meta list[dict]."""
     xs, ys, metas = zip(*batch)
-    batch_x = torch.stack([a if a.dim() == 2 else a.unsqueeze(0) for a in xs], dim=0)
+    batch_x = torch.stack(xs, dim=0)
     batch_y = torch.stack(ys, dim=0)
     return batch_x, batch_y, list(metas)
