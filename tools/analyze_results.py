@@ -74,6 +74,27 @@ def run_analysis(results_dir, num_classes=2, fs=256):
     plt.close()
     analysis_summary["confusion_matrix"] = cm.tolist()
 
+    # 1.1) 归一化混淆矩阵（按真值行归一化）
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cm_norm = cm.astype(np.float64) / np.maximum(cm.sum(axis=1, keepdims=True), 1.0)
+    fig, ax = plt.subplots(figsize=(6, 5))
+    im = ax.imshow(cm_norm, cmap="Blues", vmin=0, vmax=1)
+    ax.set_xticks(range(num_classes))
+    ax.set_yticks(range(num_classes))
+    ax.set_xticklabels(["bg" if i == 0 else "cls{}".format(i) for i in range(num_classes)])
+    ax.set_yticklabels(["bg" if i == 0 else "cls{}".format(i) for i in range(num_classes)])
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("True")
+    for i in range(num_classes):
+        for j in range(num_classes):
+            ax.text(j, i, "{:.2f}".format(cm_norm[i, j]), ha="center", va="center", color="black")
+    ax.set_title("Point-wise confusion matrix (normalized)")
+    plt.colorbar(im, ax=ax)
+    plt.tight_layout()
+    plt.savefig(os.path.join(analysis_dir, "confusion_matrix_norm.png"), dpi=150, bbox_inches="tight")
+    plt.close()
+
+
     # 2) 每类 point_f1 与 event_f1 条形图
     per_class = results.get("per_class", {})
     if per_class:
@@ -114,6 +135,30 @@ def run_analysis(results_dir, num_classes=2, fs=256):
         plt.close()
         analysis_summary["boundary_error_mean"] = float(np.nanmean(mbe_list))
         analysis_summary["boundary_error_median"] = float(np.nanmedian(mbe_list))
+
+    # 3.1) 纺锤波定位效果散点图（event_f1_cls1 vs 边界误差）
+    if per_sample_rows:
+        xs, ys = [], []
+        for r in per_sample_rows:
+            f1v = r.get("event_f1_cls1")
+            mbe = r.get("mean_boundary_error_ms")
+            if f1v in (None, "") or mbe in (None, ""):
+                continue
+            try:
+                xs.append(float(f1v))
+                ys.append(float(mbe))
+            except (ValueError, TypeError):
+                pass
+        if xs and ys:
+            fig, ax = plt.subplots(figsize=(6, 4))
+            ax.scatter(xs, ys, s=16, alpha=0.6, color="purple")
+            ax.set_xlabel("Event F1 (spindle/class1)")
+            ax.set_ylabel("Mean boundary error (ms)")
+            ax.set_title("Spindle localization quality")
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(analysis_dir, "spindle_localization_scatter.png"), dpi=150, bbox_inches="tight")
+            plt.close()
 
     # 4) F1 vs 阈值（spindle 类），并输出推荐阈值
     if probs_cls1 is not None and probs_cls1.size > 0:
