@@ -104,15 +104,11 @@ def _extract_pretrain_state_dict(raw_obj):
             return raw_obj["model"]
     return raw_obj
 
-def _event_metrics_agg(metrics_list):
-    if not metrics_list:
-        return {}
-    keys = ["event_precision", "event_recall", "event_f1", "mean_boundary_error_ms"]
-    out = {}
-    for k in keys:
-        vals = [m[k] for m in metrics_list if k in m and np.isfinite(m.get(k))]
-        out[k] = float(np.nanmean(vals)) if vals else float("nan")
-    return out
+def _predict_labels_from_logits(logits, num_classes, threshold=None):
+    if (threshold is None) or (num_classes != 2):
+        return logits.argmax(dim=1).numpy()
+    probs_cls1 = torch.softmax(logits, dim=1)[:, 1, :]
+    return (probs_cls1 >= float(threshold)).long().numpy()
 
 
 class Exp_PointSeg:
@@ -220,7 +216,7 @@ class Exp_PointSeg:
         else:
             writer = None
         metrics_path = os.path.join(results_dir, "metrics.csv")
-        metrics_header = ["epoch", "train_loss", "val_acc", "val_macro_f1", "val_spindle_f1", "val_event_f1", "lr"]
+        metrics_header = ["epoch", "train_loss", "val_acc", "val_macro_f1", "val_spindle_f1", "val_event_f1", "val_pred_pos_rate", "val_gt_pos_rate", "lr"]
         if is_main_process():
             with open(metrics_path, "w", newline="", encoding="utf-8") as f:
                 csv.writer(f).writerow(metrics_header)
@@ -268,7 +264,10 @@ class Exp_PointSeg:
 
         model_optim = torch.optim.Adam(self.model.parameters(), lr=self.args.learning_rate, weight_decay=getattr(self.args, "weight_decay", 0))
         scaler = NativeScaler()
-        best_val_f1 = -1.0
+        best_val_metric = -1.0
+        best_metric_name = getattr(self.args, "pointseg_best_metric", "spindle_f1")
+        best_epoch = -1
+        best_info = {}
 
         debug_enabled = getattr(self.args, "debug", "") == "enabled"
         debug_param = None
@@ -319,14 +318,14 @@ class Exp_PointSeg:
                     delta = (debug_param - w_before).abs().mean().item()
                 _print("DEBUG epoch {} mean|Δw| on monitored param {:.6e}".format(epoch + 1, delta), self.path)
 
-            val_acc, val_macro_f1, val_spindle_f1 = self.vali(val_loader, task_id, num_classes)
+            val_acc, val_macro_f1, val_spindle_f1, val_pred_pos_rate, val_gt_pos_rate = self.vali(val_loader, task_id, num_classes)
             val_event_f1 = self.vali_event_f1(val_loader, task_id, num_classes, fs=fs, min_len=min_len, merge_gap=merge_gap, iou_thr=iou_thr)
-            _print("Epoch {} val acc {:.4f} macro_f1 {:.4f} spindle_f1 {:.4f} event_f1 {:.4f}".format(
-                epoch + 1, val_acc, val_macro_f1, val_spindle_f1, val_event_f1 if np.isfinite(val_event_f1) else 0), self.path)
+            _print("Epoch {} val acc {:.4f} macro_f1 {:.4f} spindle_f1 {:.4f} event_f1 {:.4f} pred_cls1 {:.4f} gt_cls1 {:.4f}".format(
+                epoch + 1, val_acc, val_macro_f1, val_spindle_f1, val_event_f1 if np.isfinite(val_event_f1) else 0, val_pred_pos_rate, val_gt_pos_rate), self.path)
 
             if is_main_process():
                 with open(metrics_path, "a", newline="", encoding="utf-8") as f:
-                    csv.writer(f).writerow([epoch + 1, train_loss_avg, val_acc, val_macro_f1, val_spindle_f1, val_event_f1 if np.isfinite(val_event_f1) else "", current_lr])
+                    csv.writer(f).writerow([epoch + 1, train_loss_avg, val_acc, val_macro_f1, val_spindle_f1, val_event_f1 if np.isfinite(val_event_f1) else "", val_pred_pos_rate, val_gt_pos_rate, current_lr])
                 if writer is not None:
                     writer.add_scalar("train/loss", train_loss_avg, epoch + 1)
                     writer.add_scalar("val/acc", val_acc, epoch + 1)
@@ -342,14 +341,47 @@ class Exp_PointSeg:
                 last_ckpt_path = os.path.join(self.path, "last.pth")
                 torch.save(state, last_ckpt_path)
 
-            if val_spindle_f1 >= best_val_f1:
-                best_val_f1 = val_spindle_f1
+            metric_map = {
+                "spindle_f1": val_spindle_f1,
+                "event_f1": val_event_f1 if np.isfinite(val_event_f1) else -1.0,
+                "macro_f1": val_macro_f1,
+            }
+            combo_sp = float(getattr(self.args, "pointseg_best_spindle_weight", 0.7))
+            combo_ev = float(getattr(self.args, "pointseg_best_event_weight", 0.3))
+            metric_map["spindle_event_combo"] = combo_sp * val_spindle_f1 + combo_ev * (val_event_f1 if np.isfinite(val_event_f1) else 0.0)
+            current_best_metric = metric_map.get(best_metric_name, val_spindle_f1)
+            pos_guard = float(getattr(self.args, "pointseg_best_pos_rate_guard", 0.0) or 0.0)
+            pass_pos_guard = True
+            if pos_guard > 1.0 and val_gt_pos_rate > 0:
+                lo = val_gt_pos_rate / pos_guard
+                hi = val_gt_pos_rate * pos_guard
+                pass_pos_guard = (val_pred_pos_rate >= lo) and (val_pred_pos_rate <= hi)
+            if (current_best_metric >= best_val_metric) and pass_pos_guard:
+                best_val_metric = current_best_metric
+                best_epoch = epoch + 1
+                best_info = {
+                    "epoch": best_epoch,
+                    "metric_name": best_metric_name,
+                    "metric_value": float(current_best_metric),
+                    "val_spindle_f1": float(val_spindle_f1),
+                    "val_event_f1": float(val_event_f1) if np.isfinite(val_event_f1) else None,
+                    "val_macro_f1": float(val_macro_f1),
+                    "val_pred_pos_rate": float(val_pred_pos_rate),
+                    "val_gt_pos_rate": float(val_gt_pos_rate),
+                }
                 ckpt_path = os.path.join(self.path, "best.pth")
                 if is_main_process():
                     state = self.model.state_dict() if not hasattr(self.model, "module") else self.model.module.state_dict()
                     torch.save(state, ckpt_path)
-                    _print("Saved best checkpoint to {}".format(ckpt_path), self.path)
+                    with open(os.path.join(self.path, "best_info.json"), "w", encoding="utf-8") as bf:
+                        json.dump(best_info, bf, indent=2)
+                    _print("Saved best checkpoint to {} by {}={:.4f} (epoch {}, pred_cls1 {:.4f}, gt_cls1 {:.4f})".format(
+                        ckpt_path, best_metric_name, current_best_metric, best_epoch, val_pred_pos_rate, val_gt_pos_rate), self.path)
+            elif (current_best_metric >= best_val_metric) and (not pass_pos_guard):
+                _print("Skip best save at epoch {} due to pos_rate_guard: pred_cls1 {:.4f}, gt_cls1 {:.4f}, guard {:.2f}".format(
+                    epoch + 1, val_pred_pos_rate, val_gt_pos_rate, pos_guard), self.path)
 
+        _print("Training done. best_epoch={} best_metric={} value={:.4f}".format(best_epoch, best_metric_name, best_val_metric), self.path)
         if writer is not None:
             writer.close()
         # 训练结束后自动生成曲线图，无需二次调用 plot_curves.py
@@ -376,14 +408,15 @@ class Exp_PointSeg:
                 all_y.append(batch_y.cpu())
         logits = torch.cat(all_logits, dim=0)
         y = torch.cat(all_y, dim=0)
+        with torch.no_grad():
+            pred = logits.argmax(dim=1)
+            pos_rate_pred = (pred == 1).float().mean().item() if num_classes >= 2 else 0.0
+            pos_rate_gt = (y == 1).float().mean().item() if num_classes >= 2 else 0.0
         if debug_enabled:
-            with torch.no_grad():
-                pred = logits.argmax(dim=1)
-                pos_rate_pred = (pred == 1).float().mean().item()
-                pos_rate_gt = (y == 1).float().mean().item()
             _print("DEBUG vali: pos_rate pred_cls1 {:.6f}, gt_cls1 {:.6f}".format(
                 pos_rate_pred, pos_rate_gt), self.path)
-        return _point_metrics(logits, y, num_classes)
+        acc, macro_f1, spindle_f1 = _point_metrics(logits, y, num_classes)
+        return acc, macro_f1, spindle_f1, pos_rate_pred, pos_rate_gt
 
     def vali_event_f1(self, val_loader, task_id, num_classes, fs=256, min_len=1, merge_gap=0, iou_thr=0.3):
         """返回验证集上的 macro event F1（多类平均）。"""
@@ -422,6 +455,64 @@ class Exp_PointSeg:
                 macro_f1_list.append(ev["macro_event_f1"])
         return float(np.nanmean(macro_f1_list)) if macro_f1_list else float("nan")
 
+    def _collect_logits_y_meta(self, data_loader, task_id):
+        self.model.eval()
+        all_logits, all_y, all_meta = [], [], []
+        with torch.no_grad():
+            for batch_x, batch_y, meta_list in data_loader:
+                batch_x = batch_x.float().to(self.device_id)
+                logits = self.model(batch_x, None, None, None, task_id=task_id, task_name="point_segmentation")
+                all_logits.append(logits.cpu())
+                all_y.append(batch_y)
+                all_meta.extend(meta_list)
+        logits = torch.cat(all_logits, dim=0)
+        y = torch.cat(all_y, dim=0)
+        return logits, y, all_meta
+
+    def _select_threshold_on_val(self, val_loader, task_id, num_classes, fs=256, min_len=1, merge_gap=0, iou_thr=0.3):
+        if num_classes != 2:
+            return None, {}
+        logits, y, all_meta = self._collect_logits_y_meta(val_loader, task_id)
+        gt_all = y.numpy()
+        tmin = float(getattr(self.args, "pointseg_threshold_min", 0.05))
+        tmax = float(getattr(self.args, "pointseg_threshold_max", 0.95))
+        tsteps = max(int(getattr(self.args, "pointseg_threshold_steps", 19)), 2)
+        thresholds = np.linspace(tmin, tmax, tsteps)
+        metric_name = getattr(self.args, "pointseg_threshold_metric", "event_f1")
+        w_sp = float(getattr(self.args, "pointseg_threshold_spindle_weight", 0.7))
+        w_ev = float(getattr(self.args, "pointseg_threshold_event_weight", 0.3))
+        best = {"threshold": float(thresholds[0]), "score": -1.0, "spindle_f1": 0.0, "event_f1": 0.0, "pred_pos_rate": 0.0}
+        for th in thresholds:
+            pred_labels = _predict_labels_from_logits(logits, num_classes, threshold=th)
+            pred_flat = pred_labels.flatten()
+            gt_flat = gt_all.flatten()
+            spindle_f1 = f1_score(gt_flat, pred_flat, average="binary", pos_label=1, zero_division=0)
+            ev_scores = []
+            for i in range(pred_labels.shape[0]):
+                meta = all_meta[i] if i < len(all_meta) else {}
+                fs_i = meta.get("fs", fs)
+                ev = compute_event_metrics_multiclass(pred_labels[i], gt_all[i], fs_i, num_classes,
+                                                      min_len=min_len, merge_gap=merge_gap, iou_thr=iou_thr)
+                if np.isfinite(ev.get("macro_event_f1", np.nan)):
+                    ev_scores.append(ev["macro_event_f1"])
+            event_f1 = float(np.nanmean(ev_scores)) if ev_scores else 0.0
+            if metric_name == "spindle_f1":
+                score = spindle_f1
+            elif metric_name == "combo":
+                score = w_sp * spindle_f1 + w_ev * event_f1
+            else:
+                score = event_f1
+            pred_pos_rate = float((pred_labels == 1).mean())
+            if score >= best["score"]:
+                best = {
+                    "threshold": float(th),
+                    "score": float(score),
+                    "spindle_f1": float(spindle_f1),
+                    "event_f1": float(event_f1),
+                    "pred_pos_rate": pred_pos_rate,
+                }
+        return best["threshold"], best
+
     def test(self, setting, load_ckpt=None):
         self.path = os.path.join(self.args.checkpoints, setting)
         config = self.task_data_config_list[0][1]
@@ -440,6 +531,14 @@ class Exp_PointSeg:
             model = self.model.module if hasattr(self.model, "module") else self.model
             model.load_state_dict(ckpt, strict=False)
             _print("Loaded checkpoint {}".format(load_ckpt), self.path)
+            best_info_path = os.path.join(self.path, "best_info.json")
+            if os.path.isfile(best_info_path):
+                try:
+                    with open(best_info_path, "r", encoding="utf-8") as bf:
+                        best_info = json.load(bf)
+                    _print("Best checkpoint info: epoch={epoch} metric={metric_name} value={metric_value}".format(**best_info), self.path)
+                except Exception as e:
+                    _print("Failed to read best_info.json: {}".format(e), self.path)
 
         self.model.eval()
         all_logits = []
@@ -457,11 +556,26 @@ class Exp_PointSeg:
                 all_meta.extend(meta_list)
         logits = torch.cat(all_logits, dim=0)
         y = torch.cat(all_y, dim=0)
-        acc, macro_f1, spindle_f1 = _point_metrics(logits, y, num_classes)
+
+        selected_threshold = None
+        threshold_info = {}
+        if bool(getattr(self.args, "pointseg_use_threshold_search", 0)) and num_classes == 2:
+            _, val_loader = self._get_data("val")
+            selected_threshold, threshold_info = self._select_threshold_on_val(
+                val_loader, task_id, num_classes, fs=fs, min_len=min_len, merge_gap=merge_gap, iou_thr=iou_thr)
+            _print("Threshold search selected th={:.4f} score={:.4f} spindle_f1={:.4f} event_f1={:.4f} pred_cls1={:.4f}".format(
+                threshold_info.get("threshold", 0.0), threshold_info.get("score", 0.0),
+                threshold_info.get("spindle_f1", 0.0), threshold_info.get("event_f1", 0.0),
+                threshold_info.get("pred_pos_rate", 0.0)), self.path)
+
+        pred_labels = _predict_labels_from_logits(logits, num_classes, threshold=selected_threshold)
+        y_np = y.numpy()
+        acc = accuracy_score(y_np.flatten(), pred_labels.flatten())
+        macro_f1 = f1_score(y_np.flatten(), pred_labels.flatten(), average="macro", zero_division=0)
+        spindle_f1 = f1_score(y_np.flatten(), pred_labels.flatten(), average="binary", pos_label=1, zero_division=0) if num_classes >= 2 else macro_f1
 
         # 事件级指标（多类兼容）与逐样本指标（供 analysis / best-worst 使用）
-        pred_labels = logits.argmax(dim=1).numpy()
-        gt_all = y.numpy()
+        gt_all = y_np
         event_list = []
         per_sample_rows = []
         from utils.event_metrics import compute_event_metrics_multiclass
@@ -506,6 +620,8 @@ class Exp_PointSeg:
             "spindle_f1": spindle_f1,
             "per_class": per_class_final,
             "overall_macro_event_f1": overall_macro_event_f1,
+            "selected_threshold": selected_threshold,
+            "threshold_selection": threshold_info,
         }
         _print("Test point: acc {:.4f} macro_f1 {:.4f} spindle_f1 {:.4f}".format(acc, macro_f1, spindle_f1), self.path)
         _print("Test event (macro over classes): macro_event_f1 {:.4f}".format(
@@ -524,6 +640,9 @@ class Exp_PointSeg:
 
         with open(os.path.join(results_dir, "results.json"), "w", encoding="utf-8") as f:
             json.dump({**results, "config_summary": {"num_classes": num_classes, "fs": fs}}, f, indent=2)
+        if threshold_info and is_main_process():
+            with open(os.path.join(results_dir, "threshold_selection.json"), "w", encoding="utf-8") as f:
+                json.dump(threshold_info, f, indent=2)
         with open(os.path.join(results_dir, "results.csv"), "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(list(results.keys()))

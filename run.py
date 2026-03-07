@@ -119,6 +119,17 @@ if __name__ == '__main__':
     parser.add_argument("--bg_keep_prob", type=float, default=1.0, help="background keep probability for point-wise loss (<=1.0)")
     parser.add_argument("--pointseg_weighted_sampling", type=int, default=0, help="use WeightedRandomSampler for point-seg train windows (0/1)")
     parser.add_argument("--pointseg_pos_window_weight", type=float, default=3.0, help="extra sampling weight for windows containing positive labels")
+    parser.add_argument("--pointseg_best_metric", type=str, default="spindle_f1", choices=["spindle_f1", "event_f1", "macro_f1", "spindle_event_combo"], help="metric used to select best point-seg checkpoint")
+    parser.add_argument("--pointseg_best_spindle_weight", type=float, default=0.7, help="weight for spindle_f1 when pointseg_best_metric=spindle_event_combo")
+    parser.add_argument("--pointseg_best_event_weight", type=float, default=0.3, help="weight for event_f1 when pointseg_best_metric=spindle_event_combo")
+    parser.add_argument("--pointseg_best_pos_rate_guard", type=float, default=0.0, help="if >0, only save best when pred_pos_rate in [gt/guard, gt*guard]")
+    parser.add_argument("--pointseg_use_threshold_search", type=int, default=0, help="enable val-set threshold search for binary point-seg test")
+    parser.add_argument("--pointseg_threshold_metric", type=str, default="event_f1", choices=["event_f1", "spindle_f1", "combo"], help="selection metric for val threshold search")
+    parser.add_argument("--pointseg_threshold_min", type=float, default=0.05, help="min threshold for cls1 probability scan")
+    parser.add_argument("--pointseg_threshold_max", type=float, default=0.95, help="max threshold for cls1 probability scan")
+    parser.add_argument("--pointseg_threshold_steps", type=int, default=19, help="number of threshold points in scan")
+    parser.add_argument("--pointseg_threshold_spindle_weight", type=float, default=0.7, help="spindle weight when pointseg_threshold_metric=combo")
+    parser.add_argument("--pointseg_threshold_event_weight", type=float, default=0.3, help="event weight when pointseg_threshold_metric=combo")
     parser.add_argument("--load_ckpt", type=str, default=None, help="path to checkpoint for test (e.g. checkpoints/<model_id>/best.pth)")
 
     # zero-shot-forecast-new-length

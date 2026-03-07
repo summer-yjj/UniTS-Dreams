@@ -562,19 +562,25 @@ class ForecastHead(nn.Module):
 class SegHead(nn.Module):
     """Point-wise segmentation head: token sequence [B,V,L,D] -> logits [B, num_classes, T]."""
 
-    def __init__(self, d_model, num_classes, head_dropout=0):
+    def __init__(self, d_model, num_classes, patch_len, head_dropout=0):
         super().__init__()
-        self.proj = nn.Linear(d_model, num_classes)
+        self.num_classes = num_classes
+        self.patch_len = patch_len
+        self.proj = nn.Linear(d_model, patch_len * num_classes)
         self.dropout = nn.Dropout(head_dropout)
 
     def forward(self, x_token, seq_len):
         # x_token: [B, V, L, D]
+        B, V, L, _ = x_token.shape
         x = self.dropout(self.proj(x_token))
-        x = x.mean(dim=1)
-        x = x.permute(0, 2, 1)
-        L = x.shape[2]
-        if L != seq_len:
-            x = F.interpolate(x, size=seq_len, mode="linear", align_corners=False)
+        x = x.reshape(B, V, L, self.patch_len, self.num_classes)
+        x = x.mean(dim=1)  # [B, L, patch_len, C]
+        x = x.permute(0, 3, 1, 2).reshape(B, self.num_classes, L * self.patch_len)
+        if x.shape[-1] > seq_len:
+            x = x[:, :, :seq_len]
+        elif x.shape[-1] < seq_len:
+            pad_len = seq_len - x.shape[-1]
+            x = F.pad(x, (0, pad_len))
         return x
 
 
@@ -635,7 +641,7 @@ class Model(nn.Module):
             elif configs_list[i][1]['task_name'] == 'point_segmentation':
                 self.cls_nums[task_data_name] = configs_list[i][1].get('seq_len', configs_list[i][1].get('window_T', 256))
                 num_classes = configs_list[i][1].get('num_classes', 2)
-                self.seg_heads[task_data_name] = SegHead(args.d_model, num_classes, head_dropout=args.dropout)
+                self.seg_heads[task_data_name] = SegHead(args.d_model, num_classes, patch_len=args.patch_len, head_dropout=args.dropout)
             elif configs_list[i][1]['task_name'] == 'long_term_forecast':
                 remainder = configs_list[i][1]['seq_len'] % args.patch_len
                 if remainder == 0:
