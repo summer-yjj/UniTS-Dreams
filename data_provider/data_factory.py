@@ -3,7 +3,7 @@ from data_provider.data_loader import Dataset_ETT_hour, Dataset_ETT_minute, Data
 from data_provider.uea import collate_fn
 from data_provider.dreams_pointseg import DreamsPointSegDataset, collate_pointseg
 import torch
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
 from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
 
@@ -116,17 +116,28 @@ def data_provider(args, config, flag, ddp=False):  # args,
             split_list=config.get('split_list'),
             file_list=config.get('file_list'),
             debug=getattr(args, 'debug', '') == 'enabled',
+            filter_low_hz=config.get('filter_low_hz'),
+            filter_high_hz=config.get('filter_high_hz'),
+            use_envelope=config.get('use_envelope', False),
         )
         if args.subsample_pct is not None and flag == "train":
             data_set = random_subset(data_set, args.subsample_pct, args.fix_seed)
         print(flag, 'dreams_pointseg', len(data_set))
+        sampler = DistributedSampler(data_set) if (ddp and dist.is_initialized()) else None
+        use_weighted_sampling = (flag == 'train') and bool(getattr(args, 'pointseg_weighted_sampling', 0))
+        if use_weighted_sampling and hasattr(data_set, 'get_window_sample_weights'):
+            pos_w = float(getattr(args, 'pointseg_pos_window_weight', 3.0))
+            sample_weights = data_set.get_window_sample_weights(pos_window_weight=pos_w)
+            sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+            shuffle_flag = False
+            print('pointseg weighted sampling enabled:', 'pos_window_weight=', pos_w)
         data_loader = DataLoader(
             data_set,
             batch_size=batch_size,
             shuffle=False if ddp else shuffle_flag,
             num_workers=args.num_workers,
             drop_last=drop_last,
-            sampler=DistributedSampler(data_set) if (ddp and dist.is_initialized()) else None,
+            sampler=sampler,
             collate_fn=collate_pointseg,
         )
         return data_set, data_loader

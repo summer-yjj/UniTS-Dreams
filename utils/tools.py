@@ -29,7 +29,16 @@ def adjust_learning_rate(optimizer, epoch, base_lr, args):
         import math
         total = getattr(args, 'train_epochs', 10)
         total = max(int(total), 1)
-        lr = base_lr * 0.5 * (1.0 + math.cos(math.pi * (epoch + 1) / total))
+        # 修复：添加下界防止负学习率，并考虑warmup
+        warmup_epochs = getattr(args, 'warmup_epochs', 0)
+        if epoch < warmup_epochs:
+            # Warmup阶段：线性增长从0到base_lr
+            lr = base_lr * (epoch + 1) / max(warmup_epochs, 1)
+        else:
+            # Cosine衰减，添加下界防止负值
+            adjusted_epoch = epoch - warmup_epochs
+            lr_cos = base_lr * 0.5 * (1.0 + math.cos(math.pi * (adjusted_epoch + 1) / (total - warmup_epochs)))
+            lr = max(lr_cos, base_lr * 0.001)  # 防止过度衰减
         lr_adjust = {epoch: lr}
     elif args.lradj == 'constant':
         lr_adjust = {epoch: base_lr}
@@ -41,7 +50,7 @@ def adjust_learning_rate(optimizer, epoch, base_lr, args):
                 param_group["lr"] = lr * param_group["lr_scale"]
             else:
                 param_group["lr"] = lr
-        print('Epoch {}: Updating learning rate to {}'.format(epoch+1, lr))
+        print('Epoch {}: Updating learning rate to {:.6f}'.format(epoch+1, lr))
 
 
 class dotdict(dict):

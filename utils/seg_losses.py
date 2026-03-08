@@ -19,6 +19,53 @@ def _dice_per_class(logits, y, num_classes, smooth=1e-5):
     return loss / max(num_classes, 1)
 
 
+def _tversky_loss(logits, y, num_classes, alpha=0.7, beta=0.3, smooth=1e-5, include_background=False, gamma=None, class_weights=None):
+    """Multi-class Tversky loss with optional class weighting.
+    For rare-event detection, bg can be excluded.
+    If gamma is not None, applies focal weighting: loss = (1-IoU)^gamma * (1-Tversky_IoU).
+    class_weights: optional tensor of shape (num_classes,) to weight each class loss
+    """
+    probs = F.softmax(logits, dim=1)
+    y_onehot = F.one_hot(y.clamp(0, num_classes - 1), num_classes=num_classes).permute(0, 2, 1).float()
+    class_ids = range(num_classes) if include_background else range(1, num_classes)
+    losses = []
+    for c in class_ids:
+        p = probs[:, c, :]
+        t = y_onehot[:, c, :]
+        tp = (p * t).sum()
+        fn = ((1.0 - p) * t).sum()
+        fp = (p * (1.0 - t)).sum()
+        tv = (tp + smooth) / (tp + alpha * fn + beta * fp + smooth)
+        loss_c = 1.0 - tv
+        if gamma is not None and gamma > 0:
+            focal_weight = (1.0 - tv) ** gamma
+            loss_c = focal_weight * loss_c
+        # Apply class weight if provided
+        if class_weights is not None and c < len(class_weights):
+            loss_c = loss_c * class_weights[c]
+        losses.append(loss_c)
+    if not losses:
+        return torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
+    return torch.stack(losses).mean()
+
+
+
+
+def _apply_bg_sampling(logits_flat, y_flat, bg_keep_prob=1.0):
+    """Keep all non-background samples and randomly keep a portion of background samples."""
+    if bg_keep_prob is None or bg_keep_prob >= 1.0:
+        return logits_flat, y_flat
+    bg_keep_prob = max(0.0, float(bg_keep_prob))
+    with torch.no_grad():
+        keep = torch.ones_like(y_flat, dtype=torch.bool)
+        bg_mask = (y_flat == 0)
+        if bg_mask.any():
+            rand = torch.rand(bg_mask.sum(), device=y_flat.device)
+            keep_bg = rand < bg_keep_prob
+            keep[bg_mask] = keep_bg
+        if not keep.any():
+            keep[0] = True
+    return logits_flat[keep], y_flat[keep]
 def compute_seg_loss(logits, y, cfg):
     """
     logits: [B, num_classes, T], y: [B, T] Long in [0..num_classes-1].
@@ -33,6 +80,7 @@ def compute_seg_loss(logits, y, cfg):
     device = logits.device
     seg_loss = (cfg.get("seg_loss") or "ce_dice").lower()
     class_weight_mode = (cfg.get("class_weight") or "auto").lower()
+    bg_keep_prob = float(cfg.get("bg_keep_prob", 1.0))
 
     if class_weight_mode == "manual" and "class_weights" in cfg:
         weights = torch.tensor(cfg["class_weights"], dtype=torch.float32, device=device)
@@ -45,6 +93,7 @@ def compute_seg_loss(logits, y, cfg):
 
     logits_flat = logits.permute(0, 2, 1).reshape(-1, num_classes)
     y_flat = y.reshape(-1)
+    logits_flat, y_flat = _apply_bg_sampling(logits_flat, y_flat, bg_keep_prob=bg_keep_prob)
 
     if weights is None and class_weight_mode == "auto":
         with torch.no_grad():
@@ -68,4 +117,15 @@ def compute_seg_loss(logits, y, cfg):
     if seg_loss == "ce_dice":
         dice = _dice_per_class(logits, y, num_classes)
         return ce + dice
+    if seg_loss == "tversky":
+        alpha = float(cfg.get("tversky_alpha", 0.7))
+        beta = float(cfg.get("tversky_beta", 0.3))
+        include_bg = bool(cfg.get("tversky_include_background", False))
+        return _tversky_loss(logits, y, num_classes, alpha=alpha, beta=beta, include_background=include_bg, class_weights=weights)
+    if seg_loss == "focal_tversky":
+        alpha = float(cfg.get("tversky_alpha", 0.7))
+        beta = float(cfg.get("tversky_beta", 0.3))
+        gamma = float(cfg.get("focal_tversky_gamma", 2.0))
+        include_bg = bool(cfg.get("tversky_include_background", False))
+        return _tversky_loss(logits, y, num_classes, alpha=alpha, beta=beta, gamma=gamma, include_background=include_bg, class_weights=weights)
     return ce

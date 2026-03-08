@@ -10,6 +10,10 @@ task_dataset:
     fs: 256
     num_classes: 2
     enc_in: 1
+    # 纺锤波典型频段；use_envelope=true 时为 11–16 Hz 带通 + Hilbert 包络，否则仅带通
+    filter_low_hz: 11
+    filter_high_hz: 16
+    use_envelope: true
     split_files:
       train: splits/train.txt
       val: splits/val.txt

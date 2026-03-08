@@ -110,9 +110,29 @@ if __name__ == '__main__':
                         default=1.0, help='prior anomaly ratio (%)')
 
     # point_segmentation
-    parser.add_argument("--seg_loss", type=str, default="ce_dice", choices=["ce", "ce_dice", "focal"])
+    parser.add_argument("--seg_loss", type=str, default="ce_dice", choices=["ce", "ce_dice", "focal", "tversky", "focal_tversky"])
     parser.add_argument("--class_weight", type=str, default="auto", choices=["auto", "manual"])
     parser.add_argument("--seg_pos_weight", type=float, default=None, help="extra scale for positive class(es) in auto class_weight (e.g. 2.0 to emphasize spindle)")
+    parser.add_argument("--focal_gamma", type=float, default=2.0, help="gamma for focal loss in point segmentation")
+    parser.add_argument("--focal_tversky_gamma", type=float, default=2.0, help="gamma for focal Tversky loss in point segmentation")
+    parser.add_argument("--tversky_alpha", type=float, default=0.7, help="Tversky alpha (FN penalty) for point segmentation")
+    parser.add_argument("--tversky_beta", type=float, default=0.3, help="Tversky beta (FP penalty) for point segmentation")
+    parser.add_argument("--bg_keep_prob", type=float, default=1.0, help="background keep probability for point-wise loss (<=1.0)")
+    parser.add_argument("--pointseg_weighted_sampling", type=int, default=0, help="use WeightedRandomSampler for point-seg train windows (0/1)")
+    parser.add_argument("--pointseg_pos_window_weight", type=float, default=3.0, help="extra sampling weight for windows containing positive labels")
+    parser.add_argument("--pointseg_best_metric", type=str, default="spindle_f1", choices=["spindle_f1", "event_f1", "macro_f1", "spindle_event_combo"], help="metric used to select best point-seg checkpoint")
+    parser.add_argument("--pointseg_best_spindle_weight", type=float, default=0.7, help="weight for spindle_f1 when pointseg_best_metric=spindle_event_combo")
+    parser.add_argument("--pointseg_best_event_weight", type=float, default=0.3, help="weight for event_f1 when pointseg_best_metric=spindle_event_combo")
+    parser.add_argument("--pointseg_best_pos_rate_guard", type=float, default=0.0, help="if >0, only save best when pred_pos_rate in [gt/guard, gt*guard]")
+    parser.add_argument("--pointseg_use_threshold_search", type=int, default=0, help="enable val-set threshold search for binary point-seg test")
+    parser.add_argument("--pointseg_threshold_metric", type=str, default="event_f1", choices=["event_f1", "spindle_f1", "combo"], help="selection metric for val threshold search")
+    parser.add_argument("--pointseg_threshold_min", type=float, default=0.05, help="min threshold for cls1 probability scan")
+    parser.add_argument("--pointseg_threshold_max", type=float, default=0.95, help="max threshold for cls1 probability scan")
+    parser.add_argument("--pointseg_threshold_steps", type=int, default=19, help="number of threshold points in scan")
+    parser.add_argument("--pointseg_threshold_spindle_weight", type=float, default=0.7, help="spindle weight when pointseg_threshold_metric=combo")
+    parser.add_argument("--pointseg_threshold_event_weight", type=float, default=0.3, help="event weight when pointseg_threshold_metric=combo")
+    parser.add_argument("--early_stop_patience", type=int, default=10, help="early stop patience: stop if no improvement for N epochs")
+    parser.add_argument("--pointseg_recall_cls1_guard", type=float, default=0.0, help="if >0, warn if estimated recall_cls1 drops below this guard")
     parser.add_argument("--load_ckpt", type=str, default=None, help="path to checkpoint for test (e.g. checkpoints/<model_id>/best.pth)")
 
     # zero-shot-forecast-new-length
@@ -180,6 +200,12 @@ if __name__ == '__main__':
             exp = Exp(args)  # set experiments
             print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
             exp.train(setting)
+            if args.task_name == "point_segmentation":
+                load_ckpt = os.path.join(args.checkpoints, setting, "best.pth")
+                if not os.path.isfile(load_ckpt):
+                    load_ckpt = os.path.join(args.checkpoints, setting, "last.pth")
+                print('>>>>>>>auto testing (after training): {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+                exp.test(setting, load_ckpt=load_ckpt)
     else:
         ii = 0
         setting = '{}_{}_{}_{}_ft{}_dm{}_el{}_{}_{}'.format(
